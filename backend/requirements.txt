@@ -1,0 +1,42 @@
+# Core Framework
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+
+# Database
+psycopg2-binary
+sqlalchemy
+pgvector
+asyncpg
+
+# LLM & Embeddings
+groq
+langchain
+langchain-community
+sentence-transformers
+torch
+numpy
+
+# Web Scraping
+scrapy
+beautifulsoup4
+lxml
+requests
+
+# Data Processing
+pandas
+python-dateutil
+
+# Utilities
+python-dotenv
+python-multipart
+aiofiles
+tenacity
+
+# Monitoring & Logging
+loguru
+
+# CORS
+python-jose[cryptography]
+passlib[bcrypt]

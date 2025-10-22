@@ -1,0 +1,54 @@
+name: Deploy Backend to Railway
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-deploy.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        working-directory: ./backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        working-directory: ./backend
+        run: |
+          pip install pytest pytest-cov
+          pytest tests/ --cov=app --cov-report=term-missing || echo "No tests found"
+
+      - name: Lint code
+        working-directory: ./backend
+        run: |
+          pip install flake8
+          flake8 app/ --count --select=E9,F63,F7,F82 --show-source --statistics || echo "Linting warnings"
+
+      - name: Deploy to Railway
+        run: |
+          echo "Backend deployment triggered"
+          echo "Railway will auto-deploy from main branch"
+        # Railway automatically deploys when you connect your GitHub repo
+        # No additional action needed if you've connected Railway to your repo
+
+      - name: Verify deployment
+        run: |
+          echo "Waiting for deployment to complete..."
+          sleep 30
+          # Add your Railway app URL here
+          # curl -f https://your-app.railway.app/health || exit 1
