@@ -43,6 +43,9 @@ class Settings(BaseSettings):
 
     adzuna_app_id: Optional[str] = None
     adzuna_app_key: Optional[str] = None
+
+    usajobs_api_key: Optional[str] = None
+    usajobs_email: Optional[str] = None
     
     # CORS Configuration
     cors_origins: list = ["http://localhost:3000", "https://*.vercel.app"]

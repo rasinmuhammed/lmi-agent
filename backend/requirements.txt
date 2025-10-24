@@ -40,3 +40,5 @@ loguru
 # CORS
 python-jose[cryptography]
 passlib[bcrypt]
+
+html2text

@@ -1,7 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  swcMinify: true,
   
   // Environment variables
   env: {
@@ -10,7 +9,7 @@ const nextConfig = {
 
   // Optimize images
   images: {
-    domains: [],
+    remotePatterns: [], // Updated from 'domains'
     formats: ['image/webp', 'image/avif'],
   },
 
@@ -47,6 +46,9 @@ const nextConfig = {
       },
     ];
   },
+
+  // Fix for multiple lockfiles warning
+  outputFileTracingRoot: __dirname,
 };
 
 module.exports = nextConfig;
