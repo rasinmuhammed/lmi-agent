@@ -18,7 +18,7 @@ engine = create_engine(
     pool_size=settings.db_pool_size,
     max_overflow=settings.db_max_overflow,
     echo=settings.debug,
-    future=True,  # ✅ ensures SQLAlchemy 2.x style execution
+    future=True,
 )
 
 # ---------------------------------------------------------------------
@@ -54,9 +54,9 @@ class JobPosting(Base):
     scraped_date = Column(DateTime, default=datetime.utcnow, index=True)
     
     # Metadata for filtering
-    job_type = Column(String(100))           # Full-time, Contract, etc.
-    experience_level = Column(String(100))   # Entry, Mid, Senior
-    remote_option = Column(String(100))      # Remote, Hybrid, On-site
+    job_type = Column(String(100))
+    experience_level = Column(String(100))
+    remote_option = Column(String(100))
     
     def __repr__(self):
         return f"<JobPosting(title='{self.title}', company='{self.company}')>"
@@ -74,8 +74,8 @@ class JobChunk(Base):
     # Vector embedding for similarity search
     embedding = Column(Vector(settings.embedding_dimension))
     
-    # ✅ FIX: rename reserved 'metadata' to 'chunk_metadata'
-    chunk_metadata = Column("metadata", JSON)  # Column name in DB remains 'metadata'
+    # ✅ FIX: Use different column name to avoid SQLAlchemy reserved attribute conflict
+    chunk_metadata = Column("chunk_metadata", JSON)
     
     created_at = Column(DateTime, default=datetime.utcnow)
     

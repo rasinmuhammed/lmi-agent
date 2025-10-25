@@ -1,9 +1,5 @@
 """
 Optimized production-grade job ingestion and embedding generation
-- Adaptive batching for embeddings (MPS-friendly)
-- Parallel chunk preparation
-- Resilient DB operations with retries and progress tracking
-- Memory-efficient embedding updates
 """
 
 import sys
@@ -12,16 +8,12 @@ import json
 import logging
 from datetime import datetime, timedelta
 from typing import List, Dict
-from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-from sqlalchemy import func
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.database import SessionLocal, JobPosting, JobChunk, init_db
 from app.rag.embeddings import get_embedding_generator, prepare_job_chunks
 from app.scraper.job_fetcher import JobFetcherManager
-
+from sqlalchemy import func
 from tqdm import tqdm
 
 # ---------------- Logging Setup ----------------
@@ -32,11 +24,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ---------------- Job Ingestion Pipeline ----------------
 class JobIngestionPipeline:
     """Production-ready job ingestion pipeline with embeddings"""
 
-    def __init__(self, commit_every: int = 10):
+    def __init__(self, commit_every: int = 5):
         self.db = SessionLocal()
         self.embedding_gen = get_embedding_generator()
         self.commit_every = commit_every
@@ -49,7 +40,6 @@ class JobIngestionPipeline:
             "errors": 0,
         }
 
-    # -------- Main API ingestion --------
     def fetch_and_ingest(
         self, search_terms: List[str], location: str = None, api_config: Dict = None
     ):
@@ -76,7 +66,7 @@ class JobIngestionPipeline:
             backup_file = f"data/jobs_backup_{timestamp}.json"
             with open(backup_file, "w") as f:
                 json.dump(jobs, f, indent=2, default=str)
-            logger.info(f"Backup saved to: {backup_file}")
+            logger.info(f"✅ Backup saved to: {backup_file}")
 
             # Ingest jobs
             self._ingest_jobs(jobs)
@@ -90,12 +80,12 @@ class JobIngestionPipeline:
         finally:
             self.db.close()
 
-    # -------- Job ingestion helper --------
     def _ingest_jobs(self, jobs: List[Dict]):
         logger.info("📝 Ingesting jobs into database...")
-
-        def process_job(job_data):
+        
+        for idx, job_data in enumerate(tqdm(jobs, desc="Processing jobs", ncols=80)):
             try:
+                # Check if job exists
                 existing = self.db.query(JobPosting).filter(
                     JobPosting.job_id == job_data["job_id"]
                 ).first()
@@ -104,170 +94,183 @@ class JobIngestionPipeline:
                     if self._should_update(existing, job_data):
                         self._update_job(existing, job_data)
                         self.stats["jobs_updated"] += 1
-                        return "updated"
                     else:
                         self.stats["jobs_skipped"] += 1
-                        return "skipped"
+                    continue
 
-                # New job
+                # ✅ Create new job posting
                 job = JobPosting(
                     job_id=job_data["job_id"],
                     title=job_data["title"],
                     company=job_data["company"],
-                    location=job_data["location"],
-                    description=job_data["description"],
+                    location=job_data.get("location", ""),
+                    description=job_data.get("description", ""),
                     requirements=job_data.get("requirements", ""),
                     skills=job_data.get("skills", []),
                     salary_range=job_data.get("salary_range"),
                     source_url=job_data["source_url"],
-                    source_platform=job_data["source_platform"],
+                    source_platform=job_data.get("source_platform", "Unknown"),
                     scraped_date=job_data.get("scraped_date", datetime.utcnow()),
                     posted_date=job_data.get("posted_date"),
                     job_type=job_data.get("job_type"),
                     experience_level=job_data.get("experience_level"),
                     remote_option=job_data.get("remote_option"),
                 )
+                
                 self.db.add(job)
-                self.db.flush()  # get job.id
+                self.db.flush()  # Get job.id immediately
+                
+                logger.info(f"✅ Created job: {job.title} (ID: {job.id})")
 
-                # Prepare chunks in parallel
+                # ✅ Prepare and create chunks
                 chunks = prepare_job_chunks(job_data)
+                
                 if not chunks:
-                    logger.warning(f"No chunks for job: {job_data['title']}")
-                    return "no_chunks"
+                    logger.warning(f"⚠️ No chunks generated for job: {job.title}")
+                    self.stats["jobs_new"] += 1
+                    continue
 
-                # Adaptive batching for embeddings (MPS-friendly)
+                # Generate embeddings in batches
                 chunk_texts = [c["text"] for c in chunks]
-                batch_size = 16 if len(chunk_texts) > 16 else len(chunk_texts)
-                embeddings = []
+                embeddings = self.embedding_gen.generate_embeddings_batch(chunk_texts, batch_size=8)
+                
+                logger.info(f"Generated {len(embeddings)} embeddings for {job.title}")
 
-                for i in range(0, len(chunk_texts), batch_size):
-                    batch = chunk_texts[i : i + batch_size]
-                    embeddings.extend(self.embedding_gen.generate_embeddings_batch(batch))
-
-                # Save chunks
+                # ✅ Create chunk records
                 for chunk_data, embedding in zip(chunks, embeddings):
                     chunk = JobChunk(
                         job_posting_id=job.id,
                         chunk_text=chunk_data["text"],
                         chunk_index=chunk_data["index"],
                         embedding=embedding,
-                        metadata=chunk_data["metadata"],
+                        chunk_metadata=chunk_data["metadata"],  # ✅ Use correct attribute name
                     )
                     self.db.add(chunk)
                     self.stats["chunks_created"] += 1
 
                 self.stats["jobs_new"] += 1
-                return "new"
+                logger.info(f"✅ Created {len(chunks)} chunks for job ID {job.id}")
+
+                # ✅ Commit every N jobs
+                if (idx + 1) % self.commit_every == 0:
+                    self.db.commit()
+                    logger.info(f"💾 Committed batch at index {idx + 1}")
 
             except Exception as e:
-                logger.error(f"Error ingesting job {job_data.get('title', 'Unknown')}: {e}")
+                logger.error(f"❌ Error ingesting job {job_data.get('title', 'Unknown')}: {e}", exc_info=True)
                 self.db.rollback()
                 self.stats["errors"] += 1
-                return "error"
 
-        # Process jobs with progress bar
-        for idx, job_data in enumerate(tqdm(jobs, desc="Processing jobs", ncols=80)):
-            process_job(job_data)
+        # ✅ Final commit for remaining jobs
+        try:
+            self.db.commit()
+            logger.info("✅ Final commit completed")
+        except Exception as e:
+            logger.error(f"❌ Final commit failed: {e}")
+            self.db.rollback()
 
-            if (idx + 1) % self.commit_every == 0:
-                self.db.commit()
-                self.db.expunge_all()  # Free memory
-
-        self.db.commit()
-        logger.info("✅ Database ingestion complete")
-
-    # -------- Update check --------
     @staticmethod
     def _should_update(existing: JobPosting, new_data: Dict) -> bool:
-        return len(new_data.get("description", "")) > len(existing.description or "") or \
-               len(new_data.get("skills", [])) > len(existing.skills or [])
+        """Check if existing job should be updated"""
+        return (
+            len(new_data.get("description", "")) > len(existing.description or "")
+            or len(new_data.get("skills", [])) > len(existing.skills or [])
+        )
 
-    # -------- Update existing job --------
     def _update_job(self, existing: JobPosting, new_data: Dict):
+        """Update existing job with new data"""
         existing.description = new_data.get("description") or existing.description
         existing.requirements = new_data.get("requirements") or existing.requirements
         existing.skills = list(set((existing.skills or []) + new_data.get("skills", [])))
         existing.salary_range = new_data.get("salary_range") or existing.salary_range
         existing.scraped_date = datetime.utcnow()
-        self.db.commit()
 
-    # -------- Summary --------
     def _print_summary(self):
+        """Print ingestion statistics"""
         logger.info("\n" + "=" * 60)
         logger.info("📊 INGESTION SUMMARY")
         logger.info("=" * 60)
         for key, val in self.stats.items():
-            logger.info(f"{key.replace('_', ' ').title():20s}: {val}")
+            logger.info(f"{key.replace('_', ' ').title():25s}: {val}")
 
         total_jobs = self.db.query(func.count(JobPosting.id)).scalar()
         total_chunks = self.db.query(func.count(JobChunk.id)).scalar()
         avg_chunks = total_chunks / total_jobs if total_jobs > 0 else 0
 
-        logger.info(f"Total Jobs in DB         : {total_jobs}")
-        logger.info(f"Total Chunks in DB       : {total_chunks}")
-        logger.info(f"Avg Chunks per Job       : {avg_chunks:.1f}")
+        logger.info(f"{'Total Jobs in DB':25s}: {total_jobs}")
+        logger.info(f"{'Total Chunks in DB':25s}: {total_chunks}")
+        logger.info(f"{'Avg Chunks per Job':25s}: {avg_chunks:.1f}")
         logger.info("=" * 60)
 
 
-# ---------------- Utility Functions ----------------
+# ---------------- Entry Points ----------------
+def ingest_from_apis(search_terms: List[str], location: str = None, api_config: Dict = None):
+    """Ingest jobs from API sources"""
+    pipeline = JobIngestionPipeline(commit_every=5)
+    return pipeline.fetch_and_ingest(search_terms, location=location, api_config=api_config)
+
+
 def ingest_from_json(json_file: str):
+    """Ingest jobs from JSON file"""
     with open(json_file, "r") as f:
         jobs = json.load(f)
-
-    pipeline = JobIngestionPipeline()
+    
+    # Handle both array and single object formats
+    if isinstance(jobs, dict):
+        jobs = [jobs]
+    
+    pipeline = JobIngestionPipeline(commit_every=5)
     pipeline._ingest_jobs(jobs)
     pipeline._print_summary()
 
 
-def ingest_from_apis(search_terms: List[str], location: str = None, api_config: Dict = None):
-    pipeline = JobIngestionPipeline()
-    return pipeline.fetch_and_ingest(search_terms, location=location, api_config=api_config)
-
-
-def update_embeddings():
-    db = SessionLocal()
-    embedding_gen = get_embedding_generator()
-
-    try:
-        chunks = db.query(JobChunk).all()
-        logger.info(f"🔄 Updating embeddings for {len(chunks)} chunks")
-
-        batch_size = 16
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i : i + batch_size]
-            embeddings = embedding_gen.generate_embeddings_batch([c.chunk_text for c in batch])
-            for c, e in zip(batch, embeddings):
-                c.embedding = e
-            db.commit()
-            db.expunge_all()
-        logger.info(f"✅ Embedding update complete for {len(chunks)} chunks")
-    finally:
-        db.close()
-
-
 def get_stats():
+    """Print database statistics"""
     db = SessionLocal()
     try:
         total_jobs = db.query(func.count(JobPosting.id)).scalar()
         total_chunks = db.query(func.count(JobChunk.id)).scalar()
-        print(f"Total jobs: {total_jobs}, Total chunks: {total_chunks}")
+        
+        print(f"\n{'=' * 40}")
+        print(f"Total Jobs:   {total_jobs}")
+        print(f"Total Chunks: {total_chunks}")
+        print(f"{'=' * 40}\n")
+        
+        if total_jobs > 0:
+            recent_jobs = db.query(JobPosting).order_by(JobPosting.scraped_date.desc()).limit(5).all()
+            print("Recent Jobs:")
+            for job in recent_jobs:
+                print(f"  - {job.title} at {job.company}")
     finally:
         db.close()
 
 
-def cleanup_old_jobs(days: int = 90):
-    db = SessionLocal()
-    cutoff = datetime.utcnow() - timedelta(days=days)
-    old_jobs = db.query(JobPosting).filter(JobPosting.scraped_date < cutoff).all()
-    if not old_jobs:
-        logger.info(f"No jobs older than {days} days")
-        return
-    confirm = input(f"Delete {len(old_jobs)} jobs older than {days} days? (yes/no): ")
-    if confirm.lower() != "yes":
-        return
-    for job in old_jobs:
-        db.query(JobChunk).filter(JobChunk.job_posting_id == job.id).delete()
-    db.query(JobPosting).filter(JobPosting.scraped_date < cutoff).delete()
-    db.commit()
-    logger.info(f"Deleted {len(old_jobs)} jobs and their chunks")
+# ---------------- CLI ----------------
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Job Ingestion Pipeline")
+    parser.add_argument("command", choices=["ingest", "stats", "json"], help="Command to run")
+    parser.add_argument("--terms", nargs="+", default=["Machine Learning Engineer"], help="Search terms")
+    parser.add_argument("--location", help="Location filter")
+    parser.add_argument("--file", help="JSON file to ingest")
+    
+    args = parser.parse_args()
+    
+    if args.command == "ingest":
+        api_config = {
+            "usajobs_email": os.getenv("USAJOBS_EMAIL"),
+            "usajobs_api_key": os.getenv("USAJOBS_API_KEY"),
+            "adzuna_app_id": os.getenv("ADZUNA_APP_ID"),
+            "adzuna_app_key": os.getenv("ADZUNA_APP_KEY"),
+        }
+        ingest_from_apis(args.terms, args.location, api_config)
+    
+    elif args.command == "json":
+        if not args.file:
+            print("Error: --file required for json command")
+            sys.exit(1)
+        ingest_from_json(args.file)
+    
+    elif args.command == "stats":
+        get_stats()
