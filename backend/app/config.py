@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     groq_temperature: float = 0.3
     groq_max_tokens: int = 2048
     
+    # HuggingFace Configuration - NEW!
+    huggingface_api_key: str
+    
     # Embedding Configuration
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_dimension: int = 384

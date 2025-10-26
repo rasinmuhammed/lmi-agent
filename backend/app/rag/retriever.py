@@ -98,7 +98,7 @@ class RAGRetriever:
             jc.id,
             jc.chunk_text,
             1 - (jc.embedding <=> '{embedding_str}'::vector) as similarity,
-            jc.metadata,
+            jc.chunk_metadata,
             jc.job_posting_id
         FROM job_chunks jc
         """
