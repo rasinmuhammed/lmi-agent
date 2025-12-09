@@ -19,6 +19,8 @@ engine = create_engine(
     max_overflow=settings.db_max_overflow,
     echo=settings.debug,
     future=True,
+    pool_pre_ping=True,  # ✅ Check connection health before using
+    pool_recycle=1800,   # ✅ Recycle connections every 30 minutes
 )
 
 # ---------------------------------------------------------------------

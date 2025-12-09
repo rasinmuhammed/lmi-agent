@@ -80,51 +80,43 @@ class RAGRetriever:
     ):
         """
         Build pgvector similarity search query with optional filters
-        
-        Args:
-            query_embedding: Query vector
-            top_k: Number of results
-            filters: Optional metadata filters
-            
-        Returns:
-            SQLAlchemy query object
         """
-        # Convert embedding to pgvector format
-        embedding_str = '[' + ','.join(map(str, query_embedding)) + ']'
+        from app.database import JobChunk, JobPosting
+        from sqlalchemy import select
         
-        # Base query with cosine similarity
-        base_query = f"""
-        SELECT 
-            jc.id,
-            jc.chunk_text,
-            1 - (jc.embedding <=> '{embedding_str}'::vector) as similarity,
-            jc.chunk_metadata,
-            jc.job_posting_id
-        FROM job_chunks jc
-        """
+        # Use pgvector's cosine_distance operator directly on the column
+        # This avoids raw SQL casting issues
+        distance_col = JobChunk.embedding.cosine_distance(query_embedding).label("distance")
+        similarity_col = (1 - distance_col).label("similarity")
         
-        # Add filters if provided
-        where_clauses = []
+        stmt = (
+            select(
+                JobChunk.id,
+                JobChunk.chunk_text,
+                similarity_col,
+                JobChunk.chunk_metadata,
+                JobChunk.job_posting_id
+            )
+            .join(JobPosting, JobChunk.job_posting_id == JobPosting.id)
+            .order_by(distance_col)
+            .limit(top_k)
+        )
+        
         if filters:
             if filters.get('location'):
-                where_clauses.append(
-                    f"jc.metadata->>'location' ILIKE '%{filters['location']}%'"
-                )
+                stmt = stmt.where(JobPosting.location.ilike(f"%{filters['location']}%"))
             if filters.get('min_date'):
-                where_clauses.append(
-                    f"(jc.metadata->>'posted_date')::timestamp >= '{filters['min_date']}'"
+                stmt = stmt.where(JobPosting.posted_date >= filters['min_date'])
+            if filters.get('job_role'):
+                role = filters['job_role']
+                stmt = stmt.where(
+                    or_(
+                        JobPosting.title.ilike(f"%{role}%"),
+                        JobPosting.description.ilike(f"%{role}%")
+                    )
                 )
-        
-        if where_clauses:
-            base_query += " WHERE " + " AND ".join(where_clauses)
-        
-        # Add ordering and limit
-        base_query += f"""
-        ORDER BY jc.embedding <=> '{embedding_str}'::vector
-        LIMIT {top_k}
-        """
-        
-        return text(base_query)
+
+        return stmt
     
     def get_job_context(self, chunk_ids: List[int]) -> List[Dict]:
         """

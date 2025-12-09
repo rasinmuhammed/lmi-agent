@@ -27,22 +27,27 @@ class LMIRAGPipeline:
         job_role: Optional[str] = None,
         location: Optional[str] = None,
         use_cache: bool = True,
-        cache_max_age_hours: int = 24
+        cache_max_age_hours: int = 24,
+        live_fetch: bool = False  # ✅ New parameter
     ) -> Dict:
         """
         Complete skill analysis pipeline
-        
-        Args:
-            query: User search query
-            job_role: Specific job role to analyze
-            location: Geographic filter
-            use_cache: Whether to use cached results
-            cache_max_age_hours: Maximum age of cache in hours
-            
-        Returns:
-            Complete skill analysis report
         """
         try:
+            # Step 0: Live Fetch (if enabled)
+            if live_fetch:
+                logger.info(f"🌐 Live fetch enabled for query: {query}")
+                from app.services.ingestion import JobIngestionService
+                ingestion_service = JobIngestionService(self.db)
+                stats = ingestion_service.fetch_and_ingest(
+                    search_terms=[query],
+                    location=location,
+                    max_jobs=10  # Limit for speed
+                )
+                logger.info(f"Live fetch stats: {stats}")
+                # Disable cache for this run since we just got new data
+                use_cache = False
+
             # Check cache if enabled
             if use_cache:
                 cached_result = self._get_cached_analysis(
@@ -90,6 +95,38 @@ class LMIRAGPipeline:
                 job_role=job_role
             )
             
+            # ✅ Normalize response structure
+            if 'skill_frequencies' not in analysis:
+                freqs = {}
+                for s in analysis.get('top_skills', []):
+                    # Try to parse frequency
+                    val = s.get('frequency', 0)
+                    if isinstance(val, str):
+                        try:
+                            # Extract number from string like "85%"
+                            import re
+                            nums = re.findall(r"[\d\.]+", val)
+                            val = float(nums[0]) if nums else 0
+                        except:
+                            val = 0
+                    freqs[s.get('skill', 'Unknown')] = val
+                    
+                    # ✅ Inject 'score' for frontend compatibility (Radar Chart)
+                    s['score'] = val / 100.0 if val > 1 else val # Normalize to 0-1 range for consistency, or keep as is? 
+                    # Frontend renders s.score * 100. So we need score to be 0-1 if frequency is 0-100?
+                    # "frequency" from LLM is usually "85%" or "0.85". 
+                    # If val is 85, score should be 0.85.
+                    if val > 1:
+                        s['score'] = val / 100.0
+                    else:
+                        s['score'] = val
+
+                analysis['skill_frequencies'] = freqs
+
+            # ✅ Normalize emerging_skills (Generator returns 'emerging_trends')
+            if 'emerging_trends' in analysis and 'emerging_skills' not in analysis:
+                analysis['emerging_skills'] = analysis['emerging_trends']
+
             # Step 4: Enrich with job context
             analysis['job_postings_sample'] = job_context[:5]
             analysis['query'] = query
@@ -292,7 +329,7 @@ class LMIRAGPipeline:
                 job_role=job_role,
                 location=location,
                 top_skills=analysis.get('top_skills', []),
-                skill_frequencies=analysis.get('skill_categories', {}),
+                skill_frequencies=analysis.get('skill_frequencies', {}), # ✅ Fixed key
                 skill_necessity_scores=analysis.get('skill_necessity_scores', {}),
                 emerging_skills=analysis.get('emerging_trends', []),
                 total_jobs_analyzed=len(job_ids),

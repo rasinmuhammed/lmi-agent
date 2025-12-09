@@ -28,13 +28,15 @@ export const analyzeSkills = async (
   query: string,
   jobRole?: string,
   location?: string,
-  useCache: boolean = true
+  useCache: boolean = true,
+  liveFetch: boolean = false
 ) => {
   const response = await api.post('/api/v1/analyze', {
     query,
     job_role: jobRole,
     location,
     use_cache: useCache,
+    live_fetch: liveFetch,
   });
   return response.data;
 };

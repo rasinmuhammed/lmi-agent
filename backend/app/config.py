@@ -26,8 +26,8 @@ class Settings(BaseSettings):
     groq_temperature: float = 0.3
     groq_max_tokens: int = 2048
     
-    # HuggingFace Configuration - NEW!
-    huggingface_api_key: str
+    # HuggingFace Configuration - Optional now that we use local models
+    huggingface_api_key: Optional[str] = None
     
     # Embedding Configuration
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"

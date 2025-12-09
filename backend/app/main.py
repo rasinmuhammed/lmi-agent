@@ -41,6 +41,7 @@ class SkillAnalysisRequest(BaseModel):
     job_role: Optional[str] = Field(None, description="Specific job role to analyze")
     location: Optional[str] = Field(None, description="Geographic location filter")
     use_cache: bool = Field(True, description="Use cached results if available")
+    live_fetch: bool = Field(False, description="Fetch fresh data from internet before analysis")
 
 
 class CompareRolesRequest(BaseModel):
@@ -78,14 +79,15 @@ async def analyze_skills(
     Performs comprehensive skill gap analysis based on real job posting data.
     """
     try:
-        logger.info(f"Received analysis request: {request.query}")
+        logger.info(f"Received analysis request: {request.query} (Live Fetch: {request.live_fetch})")
         
         pipeline = LMIRAGPipeline(db)
         result = pipeline.analyze_skills(
             query=request.query,
             job_role=request.job_role,
             location=request.location,
-            use_cache=request.use_cache
+            use_cache=request.use_cache,
+            live_fetch=request.live_fetch
         )
         
         return {
